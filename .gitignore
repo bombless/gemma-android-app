@@ -1,0 +1,24 @@
+# Gradle / Android build output
+.gradle/
+**/.gradle/
+build/
+**/build/
+.kotlin/
+local.properties
+*.iml
+.idea/
+
+# Local ONNX model weights are large external runtime assets
+*.onnx
+*.onnx_data
+
+# Root-level downloaded/exported model and debug artifacts
+/bpe_model.bin
+/tokens_vocab.bin
+/tokenizer.json
+/classes.jar
+/*.png
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

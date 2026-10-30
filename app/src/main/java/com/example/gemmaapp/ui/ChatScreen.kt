@@ -1,0 +1,202 @@
+package com.example.gemmaapp.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatScreen(
+    viewModel: ChatViewModel
+) {
+    val messages by viewModel.messages.collectAsState()
+    val isGenerating by viewModel.isGenerating.collectAsState()
+    val backendStatus by viewModel.backendStatus.collectAsState()
+
+    var inputText by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = "Gemma 4 Android",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            text = backendStatus,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.clearHistory() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Clear History")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            )
+        },
+        bottomBar = {
+            Surface(
+                tonalElevation = 3.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("输入你想问 Gemma 4 的内容...") },
+                        maxLines = 4,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    IconButton(
+                        onClick = {
+                            if (inputText.isNotBlank() && !isGenerating) {
+                                val text = inputText
+                                inputText = ""
+                                viewModel.sendMessage(text)
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(messages.size)
+                                }
+                            }
+                        },
+                        enabled = inputText.isNotBlank() && !isGenerating
+                    ) {
+                        if (isGenerating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = if (inputText.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    ) { innerPadding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(messages, key = { it.id }) { msg ->
+                MessageBubble(msg)
+            }
+        }
+    }
+}
+
+@Composable
+fun MessageBubble(message: ChatMessage) {
+    val isUser = message.sender == ChatMessage.Sender.USER
+    val isSystem = message.sender == ChatMessage.Sender.SYSTEM
+
+    val alignment = when {
+        isUser -> Alignment.CenterEnd
+        isSystem -> Alignment.Center
+        else -> Alignment.CenterStart
+    }
+
+    val bubbleColor = when {
+        isUser -> MaterialTheme.colorScheme.primary
+        isSystem -> MaterialTheme.colorScheme.surfaceVariant
+        else -> MaterialTheme.colorScheme.secondaryContainer
+    }
+
+    val textColor = when {
+        isUser -> MaterialTheme.colorScheme.onPrimary
+        isSystem -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = alignment
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = if (isSystem) 340.dp else 290.dp)
+                .clip(
+                    RoundedCornerShape(
+                        topStart = 16.dp,
+                        topEnd = 16.dp,
+                        bottomStart = if (isUser) 16.dp else 4.dp,
+                        bottomEnd = if (isUser) 4.dp else 16.dp
+                    )
+                )
+                .background(bubbleColor)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            if (!isUser) {
+                Text(
+                    text = if (isSystem) "系统提示" else "Gemma 4",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textColor.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+            }
+            Text(
+                text = message.text.ifEmpty { "思考中..." },
+                fontSize = 14.sp,
+                color = textColor,
+                lineHeight = 20.sp
+            )
+        }
+    }
+}

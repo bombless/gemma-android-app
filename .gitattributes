@@ -1,0 +1,2 @@
+app/src/main/assets/models/bpe_model.bin filter=lfs diff=lfs merge=lfs -text
+app/src/main/assets/models/tokens_vocab.bin filter=lfs diff=lfs merge=lfs -text
