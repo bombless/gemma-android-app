@@ -1,5 +1,6 @@
 package com.example.gemmaapp.ui
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -309,6 +310,7 @@ fun MessageBubble(
                                 Text(tool.status, fontSize = 11.sp, color = if (tool.status == "失败") MaterialTheme.colorScheme.error else textColor)
                             }
                             val displayedCode = tool.code.ifBlank { tool.arguments }
+                            Log.d("CodeHighlight", "Tool preview name=${tool.name}, codeChars=${displayedCode.length}, fromCode=${tool.code.isNotBlank()}")
                             if (displayedCode.isNotBlank()) {
                                 Text("JavaScript 代码", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
                                 SelectionContainer {
@@ -317,7 +319,7 @@ fun MessageBubble(
                                         shape = RoundedCornerShape(6.dp)
                                     ) {
                                         Text(
-                                            displayedCode,
+                                            highlightJavaScript(displayedCode),
                                             modifier = Modifier.fillMaxWidth().padding(8.dp),
                                             fontFamily = FontFamily.Monospace,
                                             fontSize = 11.sp,
