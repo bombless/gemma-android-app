@@ -16,6 +16,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.LongBuffer
 import java.nio.ShortBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
 import kotlin.math.exp
 
 data class GenerationChunk(
@@ -23,6 +25,32 @@ data class GenerationChunk(
     val generatedTokens: Int,
     val tokensPerSecond: Float
 )
+
+/** Decodes BPE token bytes as one UTF-8 stream, retaining partial multibyte characters. */
+private class Utf8TokenStreamDecoder {
+    private val decoder = Charsets.UTF_8.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPLACE)
+        .onUnmappableCharacter(CodingErrorAction.REPLACE)
+    private var pending = ByteArray(0)
+
+    fun append(bytes: ByteArray): String = decode(bytes, endOfInput = false)
+
+    fun finish(): String = decode(ByteArray(0), endOfInput = true)
+
+    private fun decode(bytes: ByteArray, endOfInput: Boolean): String {
+        val combined = ByteArray(pending.size + bytes.size)
+        System.arraycopy(pending, 0, combined, 0, pending.size)
+        System.arraycopy(bytes, 0, combined, pending.size, bytes.size)
+        val input = ByteBuffer.wrap(combined)
+        val output = CharBuffer.allocate(maxOf(8, combined.size * 2 + 4))
+        decoder.decode(input, output, endOfInput)
+        pending = ByteArray(input.remaining())
+        input.get(pending)
+        if (endOfInput) decoder.flush(output)
+        output.flip()
+        return output.toString()
+    }
+}
 
 /**
  * OnnxRuntime execution engine for Gemma 4 ONNX on Snapdragon 8 Gen 3.
@@ -233,18 +261,21 @@ class GemmaEngine private constructor(
         // Measure decode throughput separately from prompt prefill latency.
         val decodeStartNanos = System.nanoTime()
         var generatedTokens = 0
+        val utf8Decoder = Utf8TokenStreamDecoder()
 
         // Generate tokens sequentially
         for (step in 0 until maxNewTokens) {
             val nextToken = sampleNextTokenFp16(lastLogitsTensor, temperature, topP)
-            if (nextToken == GemmaTokenizer.EOS_TOKEN_ID || nextToken == (tokenizer.vocab["<turn|>"] ?: 107)) {
+            // Gemma 4 emits <|tool_response> immediately after a tool call as a
+            // generation stop marker. Return control to the host to execute it.
+            if (nextToken == GemmaTokenizer.EOS_TOKEN_ID ||
+                nextToken == (tokenizer.vocab["<turn|>"] ?: 107) ||
+                nextToken == (tokenizer.vocab["<|tool_response>"] ?: 115)) {
                 break
             }
 
-            val tokenText = tokenizer.decodeToken(nextToken)
-            if (tokenText.contains("<turn|>") || tokenText.contains("<eos>")) {
-                break
-            }
+            // BPE token bytes can split a UTF-8 character; decode the whole stream.
+            val tokenText = utf8Decoder.append(tokenizer.decodeTokenBytes(nextToken))
             generatedTokens += 1
             val elapsedSeconds = ((System.nanoTime() - decodeStartNanos).coerceAtLeast(1L)) / 1_000_000_000.0
             emit(
@@ -324,6 +355,11 @@ class GemmaEngine private constructor(
                 kb.clear(); kb.put(kSb); kb.flip()
                 vb.clear(); vb.put(vSb); vb.flip()
             }
+        }
+        val utf8Tail = utf8Decoder.finish()
+        if (utf8Tail.isNotEmpty()) {
+            val elapsedSeconds = ((System.nanoTime() - decodeStartNanos).coerceAtLeast(1L)) / 1_000_000_000.0
+            emit(GenerationChunk(utf8Tail, generatedTokens, (generatedTokens / elapsedSeconds).toFloat()))
         }
     }.flowOn(Dispatchers.Default)
 

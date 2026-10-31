@@ -308,14 +308,23 @@ fun MessageBubble(
                                 Text("🛠 工具调用 #${index + 1} · ${tool.name}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 Text(tool.status, fontSize = 11.sp, color = if (tool.status == "失败") MaterialTheme.colorScheme.error else textColor)
                             }
-                            Text("调用参数（JSON）", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
-                            SelectionContainer {
-                                Text(tool.arguments, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp, color = textColor)
-                            }
-                            if (tool.code.isNotBlank()) {
-                                Text("解析后的 JavaScript", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
+                            val displayedCode = tool.code.ifBlank { tool.arguments }
+                            if (displayedCode.isNotBlank()) {
+                                Text("JavaScript 代码", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
                                 SelectionContainer {
-                                    Text(tool.code, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp, color = textColor)
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            displayedCode,
+                                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            lineHeight = 15.sp,
+                                            color = textColor
+                                        )
+                                    }
                                 }
                             }
                             if (tool.output.isNotBlank()) {

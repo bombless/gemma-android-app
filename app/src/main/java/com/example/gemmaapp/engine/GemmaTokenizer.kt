@@ -111,7 +111,14 @@ class GemmaTokenizer private constructor(
                 "<turn|>" to (vocabMap["<turn|>"] ?: 107),
                 "<|think|>" to (vocabMap["<|think|>"] ?: 108),
                 "<|channel>" to (vocabMap["<|channel>"] ?: 109),
-                "<channel|>" to (vocabMap["<channel|>"] ?: 110)
+                "<channel|>" to (vocabMap["<channel|>"] ?: 110),
+                "<|tool>" to (vocabMap["<|tool>"] ?: 111),
+                "<tool|>" to (vocabMap["<tool|"] ?: 112),
+                "<|tool_call>" to (vocabMap["<|tool_call>"] ?: 113),
+                "<tool_call|>" to (vocabMap["<tool_call|"] ?: 114),
+                "<|tool_response>" to (vocabMap["<|tool_response>"] ?: 115),
+                "<tool_response|>" to (vocabMap["<tool_response|"] ?: 116),
+                "<|\"|>" to (vocabMap["<|\"|>"] ?: 117)
             )
 
             return GemmaTokenizer(vocabMap, vocabList.toTypedArray(), mergesMap, specials)
@@ -128,7 +135,10 @@ class GemmaTokenizer private constructor(
         val sb = StringBuilder()
         sb.append("<bos>")
         if (!systemPrompt.isNullOrBlank()) {
-            sb.append("<|turn>system\n").append(systemPrompt.trim()).append("<turn|>\n")
+            // Gemma 4 E2B/E4B enables reasoning with <|think|> at the start
+            // of the system message, not with an assistant analysis header.
+            sb.append("<|turn>system\n<|think|>\n")
+                .append(systemPrompt.trim()).append("<turn|>\n")
         }
         sb.append("<|turn>user\n").append(userPrompt.trim()).append("<turn|>\n")
         sb.append("<|turn>model\n")
@@ -222,6 +232,10 @@ class GemmaTokenizer private constructor(
         val bytes = tokensList[tokenId]
         return String(bytes, Charsets.UTF_8)
     }
+
+    /** Returns raw token bytes so callers can decode UTF-8 across token boundaries. */
+    fun decodeTokenBytes(tokenId: Int): ByteArray =
+        if (tokenId in tokensList.indices) tokensList[tokenId] else ByteArray(0)
 
     fun decodeTokens(tokenIds: List<Int>): String {
         var totalLen = 0

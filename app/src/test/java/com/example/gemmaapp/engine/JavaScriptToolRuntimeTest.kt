@@ -69,4 +69,15 @@ Check the edge cases.<tool_call>{"name":"javascript","arguments":{"code":"1+1"}}
         assertTrue(ToolCallParser.toolCallPreview(raw)?.contains("\"code\":\"1+1\"") == true)
         assertTrue(ToolCallParser.visibleText(raw).isEmpty())
     }
+
+    @Test
+    fun hidesIncompleteToolCallPreviewUntilClosingMarkerArrives() {
+        val jsonPrefix = "<tool_call>{\"name\":\"javascript\",\"arguments\":{\"code\":\"1+"
+        assertTrue(ToolCallParser.toolCallPreview(jsonPrefix) == null)
+        assertTrue(ToolCallParser.toolCallPreview(jsonPrefix + "1\"}}" + "</tool_call>") != null)
+
+        val nativePrefix = "<|tool_call>call:javascript{code:<|\"|>console.log('partial');"
+        assertTrue(ToolCallParser.toolCallPreview(nativePrefix) == null)
+        assertTrue(ToolCallParser.toolCallPreview(nativePrefix + "<|\"|>}<tool_call|>") != null)
+    }
 }
