@@ -60,7 +60,7 @@ jobs:
           done
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: bash ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
