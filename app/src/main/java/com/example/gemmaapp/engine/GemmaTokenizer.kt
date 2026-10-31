@@ -118,7 +118,10 @@ class GemmaTokenizer private constructor(
                 "<tool_call|>" to (vocabMap["<tool_call|"] ?: 114),
                 "<|tool_response>" to (vocabMap["<|tool_response>"] ?: 115),
                 "<tool_response|>" to (vocabMap["<tool_response|"] ?: 116),
-                "<|\"|>" to (vocabMap["<|\"|>"] ?: 117)
+                "<|\"|>" to (vocabMap["<|\"|>"] ?: 117),
+                "<|audio>" to (vocabMap["<|audio>"] ?: 256000),
+                "<|audio|>" to (vocabMap["<|audio|>"] ?: 258881),
+                "<audio|>" to (vocabMap["<audio|>"] ?: 258883)
             )
 
             return GemmaTokenizer(vocabMap, vocabList.toTypedArray(), mergesMap, specials)

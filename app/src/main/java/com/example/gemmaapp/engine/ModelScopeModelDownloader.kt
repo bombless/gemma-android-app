@@ -24,11 +24,12 @@ data class ModelDownloadProgress(
 /** Downloads the ONNX graph and external tensor data from the public ModelScope repo. */
 object ModelScopeModelDownloader {
     private const val BASE_URL = "https://modelscope.cn/models/rustykate/android-multi-modal-onnx-htp/resolve/master/"
+    private const val AUDIO_BASE_URL = "https://hf-mirror.com/onnx-community/gemma-4-E2B-it-ONNX/resolve/main/onnx/"
     private const val CONNECT_TIMEOUT_MS = 30_000
     private const val READ_TIMEOUT_MS = 90_000
     private const val BUFFER_SIZE = 256 * 1024
 
-    private data class RemoteFile(val name: String, val sha256: String)
+    private data class RemoteFile(val name: String, val sha256: String, val baseUrl: String = BASE_URL)
     private data class RemoteMetadata(val size: Long)
 
     // SHA-256 values are the ModelScope LFS object identifiers verified for this model revision.
@@ -36,7 +37,9 @@ object ModelScopeModelDownloader {
         RemoteFile("decoder_model_merged_q4f16.onnx", "73c0f1fe04f9a3a048fb3319c0671b6cf0346bf33a3a8624c853bcffe01c24a4"),
         RemoteFile("decoder_model_merged_q4f16.onnx_data", "3b27245a7396cb7039a4e4118bd2a8aa35106bae381522edf7c4867b5f22bb10"),
         RemoteFile("embed_tokens_q4f16.onnx", "d7ca53f6a169471b5699b2f57ee4c7aa2c73732b0152f3909e64b71384444825"),
-        RemoteFile("embed_tokens_q4f16.onnx_data", "024b199e6358ed42970f807686add5f9430d7e254ca7ce22fc9c83f015b9c517")
+        RemoteFile("embed_tokens_q4f16.onnx_data", "024b199e6358ed42970f807686add5f9430d7e254ca7ce22fc9c83f015b9c517"),
+        RemoteFile("audio_encoder_q4f16.onnx", "5e0deb22791685c792d4b8e089deef9670fa4a4cecde434213d6a742e58fc3fa", AUDIO_BASE_URL),
+        RemoteFile("audio_encoder_q4f16.onnx_data", "df58e61a00bafa9449ee5fd52895ce952f158bbdd1fe38df8a68f48f36842e62", AUDIO_BASE_URL)
     )
 
     suspend fun download(context: Context, onProgress: (ModelDownloadProgress) -> Unit): File =
@@ -72,7 +75,7 @@ object ModelScopeModelDownloader {
         }
 
     private fun probe(file: RemoteFile): RemoteMetadata {
-        val connection = (URL(BASE_URL + file.name).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(file.baseUrl + file.name).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -84,7 +87,9 @@ object ModelScopeModelDownloader {
         try {
             val code = connection.responseCode
             val linkedHash = connection.getHeaderField("X-Linked-Etag")?.trim()?.trim('"')
-            if (!linkedHash.equals(file.sha256, ignoreCase = true)) {
+            // HF mirror exposes a Xet object hash as ETag rather than X-Linked-Etag;
+            // the downloaded file is still verified against the pinned SHA-256 below.
+            if (file.baseUrl == BASE_URL && !linkedHash.equals(file.sha256, ignoreCase = true)) {
                 throw IllegalStateException("ModelScope 文件校验标识不匹配：${file.name}")
             }
             val total = connection.getHeaderField("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
@@ -123,7 +128,7 @@ object ModelScopeModelDownloader {
         while (true) {
             attempt++
             var offset = if (partial.isFile) partial.length() else 0L
-            val connection = (URL(BASE_URL + file.name).openConnection() as HttpURLConnection).apply {
+            val connection = (URL(file.baseUrl + file.name).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS

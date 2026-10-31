@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.gemmaapp.engine.GemmaEngine
+import com.example.gemmaapp.engine.Gemma4AudioFeatureExtractor
 import com.example.gemmaapp.engine.JavaScriptToolRuntime
 import com.example.gemmaapp.engine.ToolCallParser
 import com.example.gemmaapp.engine.StreamingOutputStateMachine
@@ -121,10 +122,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (engine == null && !_isDownloadingModels.value) loadEngine()
     }
 
-    fun sendMessage(promptText: String) {
-        if (promptText.isBlank() || _isGenerating.value) return
+    fun sendMessage(promptText: String, audioSamples: FloatArray? = null) {
+        if ((promptText.isBlank() && audioSamples == null) || _isGenerating.value) return
 
-        val userMsg = ChatMessage(sender = ChatMessage.Sender.USER, text = promptText.trim())
+        val audioTokenCount = audioSamples?.let {
+            Gemma4AudioFeatureExtractor.softTokenCountForSamples(it.size)
+        } ?: 0
+        if (audioSamples != null && audioTokenCount <= 0) {
+            _messages.value = _messages.value + ChatMessage(
+                sender = ChatMessage.Sender.SYSTEM,
+                text = "录音太短，无法识别，请重新录制。"
+            )
+            return
+        }
+        val modelPrompt = if (audioSamples != null) {
+            "Transcribe the following speech segment in Chinese into Chinese text.\n\n" +
+                "Follow these specific instructions for formatting the answer:\n" +
+                "* Only output the transcription, with no newlines.\n" +
+                "* When transcribing numbers, write the digits.\n\n" +
+                "<|audio>" + "<|audio|>".repeat(audioTokenCount) + "<audio|>"
+        } else promptText.trim()
+        val displayText = if (audioSamples != null) {
+            "🎤 语音输入（${String.format(java.util.Locale.US, "%.1f", audioSamples.size / 16000f)} 秒）"
+        } else promptText.trim()
+
+        val userMsg = ChatMessage(sender = ChatMessage.Sender.USER, text = displayText)
         val initialModelMsg = ChatMessage(sender = ChatMessage.Sender.MODEL, text = "")
 
         _messages.value = _messages.value + userMsg + initialModelMsg
@@ -145,7 +167,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val toolCallItems = mutableListOf<ToolCallInfo>()
             val generationStartNanos = System.nanoTime()
             var totalTokens = 0
-            var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(promptText, toolSystemPrompt)
+            var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(modelPrompt, toolSystemPrompt)
             try {
                 var toolRounds = 0
                 while (true) {
@@ -157,7 +179,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val thinkTokenId = currentEngine.tokenizer.encode("<|think|>").firstOrNull()
                     val thinkTokenPresent = thinkTokenId != null && promptTokenIds.contains(thinkTokenId)
                     Log.i(TAG, "THINK_TRACE round_start round=${toolRounds + 1} promptTokens=${promptTokenIds.size} thinkTokenPresent=$thinkTokenPresent")
-                    currentEngine.generateStream(conversationPrompt, maxNewTokens = 768).collect { chunk ->
+                    currentEngine.generateStream(conversationPrompt, maxNewTokens = 768, audioSamples = audioSamples).collect { chunk ->
                         roundBuilder.append(chunk.text)
                         totalTokens += 1
                         _generationSpeed.value = chunk.tokensPerSecond

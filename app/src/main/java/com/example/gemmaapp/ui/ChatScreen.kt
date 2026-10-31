@@ -1,6 +1,15 @@
 package com.example.gemmaapp.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -13,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,9 +36,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,8 +60,85 @@ fun ChatScreen(
     val isEngineReady by viewModel.isEngineReady.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
+    var isRecording by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val recordingStopRequested = remember { AtomicBoolean(false) }
+
+    fun beginVoiceRecording() {
+        val sampleRate = 16_000
+        val maxSamples = sampleRate * 30
+        val minBuffer = AudioRecord.getMinBufferSize(
+            sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBuffer <= 0) {
+            Toast.makeText(context, "当前设备不支持 16 kHz 麦克风录音", Toast.LENGTH_LONG).show()
+            return
+        }
+        val recorder = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            maxOf(minBuffer, 8192)
+        )
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            recorder.release()
+            Toast.makeText(context, "无法初始化麦克风", Toast.LENGTH_LONG).show()
+            return
+        }
+        recordingStopRequested.set(false)
+        try {
+            recorder.startRecording()
+        } catch (error: Exception) {
+            recorder.release()
+            Toast.makeText(context, "启动录音失败：${error.message}", Toast.LENGTH_LONG).show()
+            return
+        }
+        isRecording = true
+        coroutineScope.launch(Dispatchers.IO) {
+            val pcm = ArrayList<Short>(maxSamples)
+            val buffer = ShortArray(4096)
+            try {
+                while (!recordingStopRequested.get() && pcm.size < maxSamples) {
+                    val count = recorder.read(buffer, 0, minOf(buffer.size, maxSamples - pcm.size))
+                    if (count > 0) {
+                        for (i in 0 until count) pcm.add(buffer[i])
+                    } else if (count < 0) {
+                        throw IllegalStateException("麦克风读取失败：$count")
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e("GemmaVoice", "Audio recording failed", error)
+            } finally {
+                try {
+                    if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
+                } catch (_: Exception) { }
+                recorder.release()
+            }
+            val samples = FloatArray(pcm.size) { pcm[it].toFloat() / 32768f }
+            withContext(Dispatchers.Main) {
+                isRecording = false
+                if (samples.size >= 4800) {
+                    viewModel.sendMessage("", samples)
+                } else {
+                    Toast.makeText(context, "录音太短，请重新录制", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) beginVoiceRecording()
+        else Toast.makeText(context, "需要麦克风权限才能识别语音", Toast.LENGTH_SHORT).show()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { recordingStopRequested.set(true) }
+    }
 
     LaunchedEffect(
         messages.size,
@@ -114,7 +206,28 @@ fun ChatScreen(
                         )
                     )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    IconButton(
+                        onClick = {
+                            if (isRecording) {
+                                recordingStopRequested.set(true)
+                            } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                beginVoiceRecording()
+                            } else {
+                                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        enabled = !isGenerating && isEngineReady
+                    ) {
+                        Icon(
+                            imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = if (isRecording) "停止录音并识别" else "开始语音输入",
+                            tint = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     IconButton(
                         onClick = {
@@ -127,7 +240,7 @@ fun ChatScreen(
                                 }
                             }
                         },
-                        enabled = inputText.isNotBlank() && !isGenerating && isEngineReady
+                        enabled = inputText.isNotBlank() && !isGenerating && !isRecording && isEngineReady
                     ) {
                         if (isGenerating) {
                             CircularProgressIndicator(

@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.flowOn
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.nio.LongBuffer
 import java.nio.ShortBuffer
 import java.nio.CharBuffer
@@ -61,6 +62,7 @@ class GemmaEngine private constructor(
     private val env: OrtEnvironment,
     private val embedSession: OrtSession,
     private val decoderSession: OrtSession,
+    private val audioModelFile: File,
     val tokenizer: GemmaTokenizer,
     val backendName: String
 ) {
@@ -80,7 +82,9 @@ class GemmaEngine private constructor(
             val embedModelFile: File,
             val embedDataFile: File,
             val decoderModelFile: File,
-            val decoderDataFile: File
+            val decoderDataFile: File,
+            val audioModelFile: File,
+            val audioDataFile: File
         )
 
         fun findModelFiles(context: Context): ModelPaths? {
@@ -99,11 +103,15 @@ class GemmaEngine private constructor(
                 val embedData = File(dir, "embed_tokens_q4f16.onnx_data")
                 val decoderModel = File(dir, "decoder_model_merged_q4f16.onnx")
                 val decoderData = File(dir, "decoder_model_merged_q4f16.onnx_data")
+                val audioModel = File(dir, "audio_encoder_q4f16.onnx")
+                val audioData = File(dir, "audio_encoder_q4f16.onnx_data")
 
                 Log.i(TAG, "Scanning for models in ${dir.absolutePath}...")
-                if (embedModel.exists() && embedData.exists() && decoderModel.exists() && decoderData.exists()) {
-                    Log.i(TAG, "Found complete ONNX model suite in: ${dir.absolutePath}")
-                    return ModelPaths(embedModel, embedData, decoderModel, decoderData)
+                if (embedModel.exists() && embedData.exists() && decoderModel.exists() && decoderData.exists() &&
+                    audioModel.exists() && audioData.exists()
+                ) {
+                    Log.i(TAG, "Found complete text + audio ONNX model suite in: ${dir.absolutePath}")
+                    return ModelPaths(embedModel, embedData, decoderModel, decoderData, audioModel, audioData)
                 }
             }
             return null
@@ -168,7 +176,7 @@ class GemmaEngine private constructor(
                 backend = "CPU (ARM64 FP16/NEON 8-Core)"
             }
 
-            return GemmaEngine(env, embedSession, decoderSession, tokenizer, backend)
+            return GemmaEngine(env, embedSession, decoderSession, modelPaths.audioModelFile, tokenizer, backend)
         }
     }
 
@@ -184,6 +192,21 @@ class GemmaEngine private constructor(
         }
     }
 
+    @Volatile private var audioSession: OrtSession? = null
+
+    private fun getAudioSession(): OrtSession {
+        audioSession?.let { return it }
+        synchronized(this) {
+            audioSession?.let { return it }
+            val options = OrtSession.SessionOptions().apply {
+                setIntraOpNumThreads(4)
+                setInterOpNumThreads(1)
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            }
+            return env.createSession(audioModelFile.absolutePath, options).also { audioSession = it }
+        }
+    }
+
     private val kvBuffers = Array(NUM_KV_LAYERS) { l ->
         LayerKvBuffer(getHeadDim(l), MAX_SEQ_LEN)
     }
@@ -192,7 +215,8 @@ class GemmaEngine private constructor(
         prompt: String,
         maxNewTokens: Int = 512,
         temperature: Float = 0.7f,
-        topP: Float = 0.9f
+        topP: Float = 0.9f,
+        audioSamples: FloatArray? = null
     ): Flow<GenerationChunk> = flow {
         val inputTokens = tokenizer.encode(prompt)
         if (inputTokens.isEmpty()) return@flow
@@ -212,8 +236,67 @@ class GemmaEngine private constructor(
 
         val embedInputs = mapOf("input_ids" to inputIdsTensor)
         val embedResults = embedSession.run(embedInputs)
-        val inputsEmbeds = embedResults.get("inputs_embeds").get() as OnnxTensor
+        var inputsEmbeds = embedResults.get("inputs_embeds").get() as OnnxTensor
         val perLayerInputs = embedResults.get("per_layer_inputs").get() as OnnxTensor
+
+        if (audioSamples != null) {
+            val audio = Gemma4AudioFeatureExtractor.extract(audioSamples)
+            val audioTokenId = tokenizer.vocab["<|audio|>"]
+                ?: throw IllegalStateException("Tokenizer 中缺少 <|audio|> 音频占位符")
+            val audioPositions = inputTokens.indices.filter { inputTokens[it] == audioTokenId }
+            if (audioPositions.size != audio.softTokenCount) {
+                throw IllegalStateException(
+                    "音频占位符数量不匹配：prompt=${audioPositions.size}, encoder预计=${audio.softTokenCount}"
+                )
+            }
+
+            val featureTensor = OnnxTensor.createTensor(
+                env,
+                FloatBuffer.wrap(audio.values),
+                longArrayOf(1, audio.frameCount.toLong(), Gemma4AudioFeatureExtractor.FEATURE_SIZE.toLong())
+            )
+            val maskBytes = ByteBuffer.allocateDirect(audio.frameCount).order(ByteOrder.nativeOrder())
+            repeat(audio.frameCount) { maskBytes.put(1.toByte()) }
+            maskBytes.flip()
+            val featureMaskTensor = OnnxTensor.createTensor(
+                env,
+                maskBytes,
+                longArrayOf(1, audio.frameCount.toLong()),
+                OnnxJavaType.BOOL
+            )
+            val audioResults = getAudioSession().run(
+                mapOf("input_features" to featureTensor, "input_features_mask" to featureMaskTensor)
+            )
+            try {
+                val audioEmbeddingsTensor = audioResults.get("audio_features").get() as OnnxTensor
+                val audioShape = audioEmbeddingsTensor.info.shape
+                val audioRows = audioShape[0].toInt()
+                if (audioRows != audioPositions.size || audioShape.getOrNull(1) != 1536L) {
+                    throw IllegalStateException(
+                        "音频编码器输出形状异常：${audioShape.contentToString()}，占位符=${audioPositions.size}"
+                    )
+                }
+
+                val audioValues = FloatArray(audioRows * 1536)
+                audioEmbeddingsTensor.floatBuffer.get(audioValues)
+                val textEmbeddings = FloatArray(promptLen * 1536)
+                inputsEmbeds.floatBuffer.get(textEmbeddings)
+                audioPositions.forEachIndexed { index, tokenPosition ->
+                    System.arraycopy(audioValues, index * 1536, textEmbeddings, tokenPosition * 1536, 1536)
+                }
+                inputsEmbeds.close()
+                inputsEmbeds = OnnxTensor.createTensor(
+                    env,
+                    FloatBuffer.wrap(textEmbeddings),
+                    longArrayOf(1, promptLen.toLong(), 1536)
+                )
+                Log.i(TAG, "Audio encoded frames=${audio.frameCount} softTokens=${audioRows}")
+            } finally {
+                audioResults.close()
+                featureTensor.close()
+                featureMaskTensor.close()
+            }
+        }
 
         // Run decoder for prefill
         val posIdsArray = LongArray(promptLen) { i -> i.toLong() }
@@ -434,6 +517,7 @@ class GemmaEngine private constructor(
     }
 
     fun close() {
+        audioSession?.close()
         embedSession.close()
         decoderSession.close()
         env.close()
