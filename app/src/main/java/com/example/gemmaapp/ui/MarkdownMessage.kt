@@ -103,25 +103,22 @@ internal fun highlightJavaScript(source: String) = buildAnnotatedString {
     val stringColor = Color(0xFF9BCB8B)
     val numberColor = Color(0xFFE5AE72)
     val commentColor = Color(0xFF84919E)
-    val functionColor = Color(0xFF82B8F0)
     val propertyColor = Color(0xFF78C8C1)
     val literalColor = Color(0xFFE6A0A0)
     val keywords = setOf("const", "let", "var", "function", "return", "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "try", "catch", "finally", "throw", "new", "class", "extends", "super", "this", "import", "export", "from", "as", "default", "async", "await", "yield", "typeof", "instanceof", "in", "of", "delete", "void", "with", "debugger", "interface", "type", "implements", "public", "private", "static", "readonly", "enum")
-    val tokenPattern = Regex("""(?s)//[^\r\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|super|this|import|export|from|as|default|async|await|yield|typeof|instanceof|in|of|delete|void|with|debugger|interface|type|implements|public|private|static|readonly|enum)\b|\b(?:true|false|null|undefined|NaN|Infinity)\b|\b(?:0[xX][\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\b|\b[A-Za-z_$][\w$]*\b""")
+    val tokenPattern = Regex("""(?s)//[^\\r\\n]*|/\\*.*?\\*/|"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`|\\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|new|class|extends|super|this|import|export|from|as|default|async|await|yield|typeof|instanceof|in|of|delete|void|with|debugger|interface|type|implements|public|private|static|readonly|enum)\\b|\\b(?:true|false|null|undefined|NaN|Infinity)\\b|\\b(?:0[xX][\\da-fA-F]+|0[bB][01]+|0[oO][0-7]+|(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?)\\b|\\b[A-Za-z_$][\\w$]*\\b""")
     var cursor = 0
     var highlightedTokens = 0
     tokenPattern.findAll(source).forEach { match ->
         append(source.substring(cursor, match.range.first))
         val token = match.value
         val previous = source.substring(0, match.range.first).trimEnd().lastOrNull()
-        val next = source.substring(match.range.last + 1).dropWhile { it.isWhitespace() }.firstOrNull()
         val color = when {
             token.startsWith("//") || token.startsWith("/*") -> commentColor
             token.startsWith('"') || token.startsWith('\'') || token.startsWith('`') -> stringColor
             token.firstOrNull()?.isDigit() == true -> numberColor
             token in setOf("true", "false", "null", "undefined", "NaN", "Infinity") -> literalColor
             token in keywords -> keywordColor
-            next == '(' -> functionColor
             previous == '.' -> propertyColor
             else -> null
         }
