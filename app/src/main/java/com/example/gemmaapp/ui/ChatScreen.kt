@@ -54,6 +54,7 @@ fun ChatScreen(
     }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         topBar = {
             TopAppBar(
                 title = {
