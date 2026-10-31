@@ -53,4 +53,20 @@ class JavaScriptToolRuntimeTest {
         )
         assertTrue(visible == "thinkingdone")
     }
+
+    @Test
+    fun extractsThinkMarkerAndKeepsFinalAnswerSeparate() {
+        val raw = "<|think|>Need to inspect the input.<|channel>finalThe answer is 42."
+        assertTrue(ToolCallParser.thinkingText(raw) == "Need to inspect the input.")
+        assertTrue(ToolCallParser.visibleText(raw) == "The answer is 42.")
+    }
+
+    @Test
+    fun extractsAnalysisChannelAndToolArguments() {
+        val raw = """<|channel>analysis
+Check the edge cases.<tool_call>{"name":"javascript","arguments":{"code":"1+1"}}</tool_call>"""
+        assertTrue(ToolCallParser.thinkingText(raw) == "Check the edge cases.")
+        assertTrue(ToolCallParser.toolCallPreview(raw)?.contains("\"code\":\"1+1\"") == true)
+        assertTrue(ToolCallParser.visibleText(raw).isEmpty())
+    }
 }

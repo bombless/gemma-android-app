@@ -140,6 +140,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             val responseBuilder = StringBuilder()
+            val thinkingBuilder = StringBuilder()
+            val toolCallItems = mutableListOf<ToolCallInfo>()
             val generationStartNanos = System.nanoTime()
             var totalTokens = 0
             var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(promptText, toolSystemPrompt)
@@ -153,7 +155,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         _generationSpeed.value = chunk.tokensPerSecond
                         _generatedTokens.value = totalTokens
                         val visible = ToolCallParser.visibleText(roundBuilder.toString())
-                        updateLastMessage((responseBuilder.toString() + visible).ifBlank { "Gemma 正在思考..." })
+                        val thinking = thinkingBuilder.toString() + ToolCallParser.thinkingText(roundBuilder.toString())
+                        val preview = ToolCallParser.toolCallPreview(roundBuilder.toString())
+                        val liveTools = toolCallItems.toMutableList()
+                        if (preview != null && liveTools.lastOrNull()?.status == "运行中") {
+                            liveTools[liveTools.lastIndex] = liveTools.last().copy(arguments = preview)
+                        } else if (preview != null) {
+                            liveTools.add(ToolCallInfo("javascript", preview))
+                        }
+                        updateLastMessage(responseBuilder.toString() + visible, thinking, liveTools)
                     }
 
                     val roundText = roundBuilder.toString()
@@ -165,6 +175,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         throw t
                     }
                     if (toolCall == null || toolRounds >= 3) {
+                        val roundThinking = ToolCallParser.thinkingText(roundText)
+                        if (roundThinking.isNotBlank()) thinkingBuilder.append(roundThinking).append("\n\n")
                         responseBuilder.append(ToolCallParser.visibleText(roundText))
                         break
                     }
@@ -173,13 +185,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     Log.i(TAG, "JavaScript tool call round=$toolRounds codeChars=${toolCall.code.length}")
                     val preamble = ToolCallParser.visibleText(roundText)
                     if (preamble.isNotBlank()) responseBuilder.append(preamble).append("\n\n")
-                    updateLastMessage(responseBuilder.toString() + "🛠 正在执行 JavaScript 工具（第 $toolRounds 轮）...")
+                    val roundThinking = ToolCallParser.thinkingText(roundText)
+                    if (roundThinking.isNotBlank()) thinkingBuilder.append(roundThinking).append("\n\n")
+                    val toolIndex = toolCallItems.size
+                    toolCallItems.add(ToolCallInfo("javascript", ToolCallParser.toolCallPreview(roundText).orEmpty(), toolCall.code, "运行中"))
+                    updateLastMessage(responseBuilder.toString(), thinkingBuilder.toString(), toolCallItems.toList())
                     val toolResult = javaScriptRuntime.execute(toolCall.code)
                     Log.i(TAG, "JavaScript tool completed success=${toolResult.success} outputChars=${toolResult.output.length}")
                     val status = if (toolResult.success) "success" else "error"
-                    responseBuilder.append("**JavaScript 工具执行（第 $toolRounds 轮，$status）**\n")
-                        .append(toolResult.output).append("\n\n")
-                    updateLastMessage(responseBuilder.toString())
+                    toolCallItems[toolIndex] = toolCallItems[toolIndex].copy(
+                        status = if (toolResult.success) "成功" else "失败", output = toolResult.output
+                    )
+                    updateLastMessage(responseBuilder.toString(), thinkingBuilder.toString(), toolCallItems.toList())
 
                     // Feed the actual tool output back as a user/tool-result turn so Gemma can inspect it.
                     conversationPrompt += "<|turn>model\n$roundText<turn|>\n" +
@@ -192,18 +209,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 val durationMs = ((System.nanoTime() - generationStartNanos) / 1_000_000L).coerceAtLeast(1L)
                 val averageSpeed = totalTokens * 1000f / durationMs
-                finishLastMessage(responseBuilder.toString(), durationMs, totalTokens, averageSpeed)
+                finishLastMessage(responseBuilder.toString(), durationMs, totalTokens, averageSpeed, thinkingBuilder.toString(), toolCallItems.toList())
                 _isGenerating.value = false
             }
         }
     }
 
-    private fun updateLastMessage(newText: String) {
+    private fun updateLastMessage(newText: String, thinking: String? = null, toolCalls: List<ToolCallInfo>? = null) {
         val currentList = _messages.value.toMutableList()
         if (currentList.isNotEmpty()) {
             val last = currentList.last()
             if (last.sender == ChatMessage.Sender.MODEL) {
-                currentList[currentList.size - 1] = last.copy(text = newText)
+                currentList[currentList.size - 1] = last.copy(
+                    text = newText, thinking = thinking ?: last.thinking, toolCalls = toolCalls ?: last.toolCalls
+                )
                 _messages.value = currentList
             }
         }
@@ -213,13 +232,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         finalText: String,
         durationMs: Long,
         tokenCount: Int,
-        averageSpeed: Float
+        averageSpeed: Float,
+        thinking: String,
+        toolCalls: List<ToolCallInfo>
     ) {
         val currentList = _messages.value.toMutableList()
         val lastIndex = currentList.lastIndex
         if (lastIndex >= 0 && currentList[lastIndex].sender == ChatMessage.Sender.MODEL) {
             currentList[lastIndex] = currentList[lastIndex].copy(
                 text = finalText.ifEmpty { "（本次没有生成文本）" },
+                thinking = thinking,
+                toolCalls = toolCalls,
                 generationDurationMs = durationMs,
                 generatedTokens = tokenCount,
                 averageTokensPerSecond = averageSpeed

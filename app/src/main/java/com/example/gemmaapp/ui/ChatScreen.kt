@@ -47,7 +47,13 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
+    LaunchedEffect(
+        messages.size,
+        messages.lastOrNull()?.text?.length,
+        messages.lastOrNull()?.thinking?.length,
+        messages.lastOrNull()?.toolCalls?.lastOrNull()?.arguments?.length,
+        messages.lastOrNull()?.toolCalls?.lastOrNull()?.output?.length
+    ) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
@@ -277,6 +283,51 @@ fun MessageBubble(
                     lineHeight = 20.sp
                 )
             } else {
+                if (message.thinking.isNotBlank()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("💭 思考过程", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            SelectionContainer {
+                                Text(message.thinking, fontSize = 12.sp, lineHeight = 18.sp, color = textColor.copy(alpha = 0.88f))
+                            }
+                        }
+                    }
+                }
+                message.toolCalls.forEachIndexed { index, tool ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                Text("🛠 工具调用 #${index + 1} · ${tool.name}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                Text(tool.status, fontSize = 11.sp, color = if (tool.status == "失败") MaterialTheme.colorScheme.error else textColor)
+                            }
+                            Text("调用参数（JSON）", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
+                            SelectionContainer {
+                                Text(tool.arguments, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp, color = textColor)
+                            }
+                            if (tool.code.isNotBlank()) {
+                                Text("解析后的 JavaScript", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
+                                SelectionContainer {
+                                    Text(tool.code, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp, color = textColor)
+                                }
+                            }
+                            if (tool.output.isNotBlank()) {
+                                HorizontalDivider()
+                                Text("执行结果", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.7f))
+                                SelectionContainer {
+                                    Text(tool.output, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp, color = textColor)
+                                }
+                            }
+                        }
+                    }
+                }
                 MarkdownMessage(content = message.text.ifEmpty { "思考中..." }, textColor = textColor)
             }
             if (!isUser && !isSystem && message.generationDurationMs != null) {
