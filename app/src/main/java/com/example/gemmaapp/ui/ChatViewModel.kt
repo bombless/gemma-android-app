@@ -1,9 +1,14 @@
 package com.example.gemmaapp.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.gemmaapp.engine.GemmaEngine
+import com.example.gemmaapp.engine.JavaScriptToolRuntime
+import com.example.gemmaapp.engine.ToolCallParser
+import com.example.gemmaapp.engine.ModelDownloadProgress
+import com.example.gemmaapp.engine.ModelScopeModelDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,29 +39,85 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _backendStatus = MutableStateFlow("正在加载引擎与模型...")
     val backendStatus: StateFlow<String> = _backendStatus.asStateFlow()
 
+    private val _downloadProgress = MutableStateFlow<ModelDownloadProgress?>(null)
+    val downloadProgress: StateFlow<ModelDownloadProgress?> = _downloadProgress.asStateFlow()
+
+    private val _isDownloadingModels = MutableStateFlow(false)
+    val isDownloadingModels: StateFlow<Boolean> = _isDownloadingModels.asStateFlow()
+
+    private val _modelDownloadFailed = MutableStateFlow(false)
+    val modelDownloadFailed: StateFlow<Boolean> = _modelDownloadFailed.asStateFlow()
+
+    private val _isEngineReady = MutableStateFlow(false)
+    val isEngineReady: StateFlow<Boolean> = _isEngineReady.asStateFlow()
+
     private var engine: GemmaEngine? = null
+    private val javaScriptRuntime = JavaScriptToolRuntime()
+    private var isLoadingEngine = false
+
+    private val toolSystemPrompt = """
+        你是运行在 Android 手机上的 Gemma 编程助手。你可以通过 javascript 工具执行 JavaScript，并根据真实执行结果修复代码。
+        当用户要求编写算法、调试代码或验证正确性时，优先编写可执行代码并调用工具测试，不要只凭推理声称测试通过。
+        工具调用必须严格使用以下格式，JSON 必须合法，代码放在 arguments.code 字符串中（换行写成 \n，双引号和反斜杠按 JSON 规则转义）：
+        <tool_call>{"name":"javascript","arguments":{"code":"console.log('hello'); test('basic', () => assert(1 + 1 === 2));"}}</tool_call>
+        工具可用 API：
+        - console.log(...): 输出日志
+        - assert(condition, message): 条件不成立时抛出错误
+        - test(name, () => { ... }): 执行一个测试并记录 PASS/FAIL；测试内使用 assert
+        - tools.randomInt(min, max): 生成包含边界的随机整数
+        - tools.now(): 当前 Unix 毫秒时间戳
+        - tools.assert / tools.test: 上述函数的 tools 命名空间别名
+        JavaScript 使用 ES6。运行环境是隔离沙箱，不提供文件、网络、Android、Java 类访问。
+        可以在一次测试脚本中实现算法、构造随机数据、检查不变量并打印汇总。测试失败时应分析错误，再发起下一次工具调用。
+        每次只发起一个 javascript 工具调用。拿到工具结果后再回答。最多进行 3 轮工具调用。
+        如果无需工具，直接用中文回答。工具调用标签外不要输出解释文字。
+    """.trimIndent()
 
     init {
         loadEngine()
     }
 
     private fun loadEngine() {
+        if (isLoadingEngine || engine != null) return
+        isLoadingEngine = true
+        Log.i(TAG, "Engine initialization started")
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                _backendStatus.value = "检测模型文件中..."
-                val found = GemmaEngine.findModelFiles(getApplication())
+                _modelDownloadFailed.value = false
+                _backendStatus.value = "检查本地模型文件..."
+                var found = GemmaEngine.findModelFiles(getApplication())
                 if (found == null) {
-                    _backendStatus.value = "未找到模型文件，请下载至 /sdcard/Download/gemma-4-E2B-it-ONNX/"
-                    return@launch
+                    _isDownloadingModels.value = true
+                    _backendStatus.value = "正在从 ModelScope 下载 Gemma 4 模型..."
+                    ModelScopeModelDownloader.download(getApplication()) { progress ->
+                        _downloadProgress.value = progress
+                    }
+                    found = GemmaEngine.findModelFiles(getApplication())
+                    if (found == null) throw IllegalStateException("模型下载完成，但未找到完整模型文件")
                 }
                 _backendStatus.value = "正在初始化 QNN HTP / CPU 引擎..."
                 val eng = GemmaEngine.initialize(getApplication(), useQnnHtp = true)
                 engine = eng
+                _isEngineReady.value = true
                 _backendStatus.value = "运行后端: ${eng.backendName}"
+                Log.i(TAG, "Engine ready backend=${eng.backendName}")
             } catch (e: Exception) {
-                _backendStatus.value = "引擎初始化失败: ${e.message}"
+                Log.e(TAG, "Engine initialization failed", e)
+                _modelDownloadFailed.value = GemmaEngine.findModelFiles(getApplication()) == null
+                _backendStatus.value = if (_modelDownloadFailed.value) {
+                    "模型下载失败: ${e.message ?: "未知错误"}"
+                } else {
+                    "引擎初始化失败: ${e.message}"
+                }
+            } finally {
+                _isDownloadingModels.value = false
+                isLoadingEngine = false
             }
         }
+    }
+
+    fun retryModelDownload() {
+        if (engine == null && !_isDownloadingModels.value) loadEngine()
     }
 
     fun sendMessage(promptText: String) {
@@ -72,7 +133,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         val currentEngine = engine
         if (currentEngine == null) {
-            updateLastMessage("错误: Gemma 引擎尚未初始化成功，请检查模型文件并重试。")
+            updateLastMessage("错误: Gemma 引擎尚未初始化成功，请等待模型下载完成或点击重试。")
             _isGenerating.value = false
             return
         }
@@ -80,22 +141,58 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val responseBuilder = StringBuilder()
             val generationStartNanos = System.nanoTime()
+            var totalTokens = 0
+            var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(promptText, toolSystemPrompt)
             try {
-                val formatted = currentEngine.tokenizer.formatChatPrompt(promptText)
-                currentEngine.generateStream(formatted).collect { chunk ->
-                    responseBuilder.append(chunk.text)
-                    _generationSpeed.value = chunk.tokensPerSecond
-                    _generatedTokens.value = chunk.generatedTokens
+                var toolRounds = 0
+                while (true) {
+                    val roundBuilder = StringBuilder()
+                    currentEngine.generateStream(conversationPrompt, maxNewTokens = 768).collect { chunk ->
+                        roundBuilder.append(chunk.text)
+                        totalTokens += 1
+                        _generationSpeed.value = chunk.tokensPerSecond
+                        _generatedTokens.value = totalTokens
+                        val visible = ToolCallParser.visibleText(roundBuilder.toString())
+                        updateLastMessage((responseBuilder.toString() + visible).ifBlank { "Gemma 正在思考..." })
+                    }
+
+                    val roundText = roundBuilder.toString()
+                    Log.d(TAG, "Generation round completed chars=${roundText.length}")
+                    val toolCall = try {
+                        ToolCallParser.parse(roundText)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Tool-call parser failed", t)
+                        throw t
+                    }
+                    if (toolCall == null || toolRounds >= 3) {
+                        responseBuilder.append(ToolCallParser.visibleText(roundText))
+                        break
+                    }
+
+                    toolRounds++
+                    Log.i(TAG, "JavaScript tool call round=$toolRounds codeChars=${toolCall.code.length}")
+                    val preamble = ToolCallParser.visibleText(roundText)
+                    if (preamble.isNotBlank()) responseBuilder.append(preamble).append("\n\n")
+                    updateLastMessage(responseBuilder.toString() + "🛠 正在执行 JavaScript 工具（第 $toolRounds 轮）...")
+                    val toolResult = javaScriptRuntime.execute(toolCall.code)
+                    Log.i(TAG, "JavaScript tool completed success=${toolResult.success} outputChars=${toolResult.output.length}")
+                    val status = if (toolResult.success) "success" else "error"
+                    responseBuilder.append("**JavaScript 工具执行（第 $toolRounds 轮，$status）**\n")
+                        .append(toolResult.output).append("\n\n")
                     updateLastMessage(responseBuilder.toString())
+
+                    // Feed the actual tool output back as a user/tool-result turn so Gemma can inspect it.
+                    conversationPrompt += "<|turn>model\n$roundText<turn|>\n" +
+                        "<|turn>user\n<tool_result name=\"javascript\" status=\"$status\">\n" +
+                        toolResult.output.take(12_000) + "\n</tool_result><turn|>\n<|turn>model\n"
                 }
-            } catch (e: Exception) {
-                responseBuilder.append("\n[生成异常]: ${e.message}")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Generation/tool loop crashed", t)
+                responseBuilder.append("\n[生成异常]: ${t.message ?: t.javaClass.simpleName}")
             } finally {
-                // Per-reply wall time includes prompt prefill and token decoding.
                 val durationMs = ((System.nanoTime() - generationStartNanos) / 1_000_000L).coerceAtLeast(1L)
-                val tokenCount = _generatedTokens.value
-                val averageSpeed = tokenCount * 1000f / durationMs
-                finishLastMessage(responseBuilder.toString(), durationMs, tokenCount, averageSpeed)
+                val averageSpeed = totalTokens * 1000f / durationMs
+                finishLastMessage(responseBuilder.toString(), durationMs, totalTokens, averageSpeed)
                 _isGenerating.value = false
             }
         }
@@ -143,5 +240,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         engine?.close()
+    }
+
+    companion object {
+        private const val TAG = "GemmaChat"
     }
 }

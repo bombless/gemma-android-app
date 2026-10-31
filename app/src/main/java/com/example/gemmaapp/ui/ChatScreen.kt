@@ -32,6 +32,10 @@ fun ChatScreen(
     val backendStatus by viewModel.backendStatus.collectAsState()
     val generationSpeed by viewModel.generationSpeed.collectAsState()
     val generatedTokens by viewModel.generatedTokens.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val isDownloadingModels by viewModel.isDownloadingModels.collectAsState()
+    val modelDownloadFailed by viewModel.modelDownloadFailed.collectAsState()
+    val isEngineReady by viewModel.isEngineReady.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -109,7 +113,7 @@ fun ChatScreen(
                                 }
                             }
                         },
-                        enabled = inputText.isNotBlank() && !isGenerating
+                        enabled = inputText.isNotBlank() && !isGenerating && isEngineReady
                     ) {
                         if (isGenerating) {
                             CircularProgressIndicator(
@@ -128,22 +132,59 @@ fun ChatScreen(
             }
         }
     ) { innerPadding ->
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(messages, key = { it.id }) { msg ->
-                val isActiveReply = isGenerating && msg.id == messages.lastOrNull()?.id
-                MessageBubble(
-                    message = msg,
-                    isGenerating = isActiveReply,
-                    generationSpeed = generationSpeed,
-                    generatedTokens = generatedTokens
-                )
+            if (isDownloadingModels || modelDownloadFailed) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        val progress = downloadProgress
+                        Text(
+                            text = if (modelDownloadFailed) "模型下载未完成" else "正在下载 ${progress?.fileName ?: "Gemma 4 模型"}",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                        if (progress != null) {
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.fraction },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "文件 ${progress.fileIndex}/${progress.totalFiles} · ${String.format(java.util.Locale.US, "%.1f", progress.downloadedBytes / 1_073_741_824.0)} / ${String.format(java.util.Locale.US, "%.2f", progress.totalBytes / 1_073_741_824.0)} GB",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                        if (modelDownloadFailed) {
+                            Text(backendStatus, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = { viewModel.retryModelDownload() }) { Text("重试下载") }
+                        }
+                    }
+                }
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(messages, key = { it.id }) { msg ->
+                    val isActiveReply = isGenerating && msg.id == messages.lastOrNull()?.id
+                    MessageBubble(
+                        message = msg,
+                        isGenerating = isActiveReply,
+                        generationSpeed = generationSpeed,
+                        generatedTokens = generatedTokens
+                    )
+                }
             }
         }
     }
