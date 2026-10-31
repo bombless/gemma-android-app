@@ -18,6 +18,12 @@ import java.nio.LongBuffer
 import java.nio.ShortBuffer
 import kotlin.math.exp
 
+data class GenerationChunk(
+    val text: String,
+    val generatedTokens: Int,
+    val tokensPerSecond: Float
+)
+
 /**
  * OnnxRuntime execution engine for Gemma 4 ONNX on Snapdragon 8 Gen 3.
  * Supports QNN HTP (NPU) hardware acceleration or high-speed multi-threaded CPU fallback.
@@ -159,7 +165,7 @@ class GemmaEngine private constructor(
         maxNewTokens: Int = 512,
         temperature: Float = 0.7f,
         topP: Float = 0.9f
-    ): Flow<String> = flow {
+    ): Flow<GenerationChunk> = flow {
         val inputTokens = tokenizer.encode(prompt)
         if (inputTokens.isEmpty()) return@flow
 
@@ -224,6 +230,10 @@ class GemmaEngine private constructor(
             vb.clear(); vb.put(vSb); vb.flip()
         }
 
+        // Measure decode throughput separately from prompt prefill latency.
+        val decodeStartNanos = System.nanoTime()
+        var generatedTokens = 0
+
         // Generate tokens sequentially
         for (step in 0 until maxNewTokens) {
             val nextToken = sampleNextTokenFp16(lastLogitsTensor, temperature, topP)
@@ -235,7 +245,15 @@ class GemmaEngine private constructor(
             if (tokenText.contains("<turn|>") || tokenText.contains("<eos>")) {
                 break
             }
-            emit(tokenText)
+            generatedTokens += 1
+            val elapsedSeconds = ((System.nanoTime() - decodeStartNanos).coerceAtLeast(1L)) / 1_000_000_000.0
+            emit(
+                GenerationChunk(
+                    text = tokenText,
+                    generatedTokens = generatedTokens,
+                    tokensPerSecond = (generatedTokens / elapsedSeconds).toFloat()
+                )
+            )
 
             currentTotalSeqLen += 1
             if (currentTotalSeqLen >= MAX_SEQ_LEN) break

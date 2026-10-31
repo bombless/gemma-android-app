@@ -30,6 +30,8 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val isGenerating by viewModel.isGenerating.collectAsState()
     val backendStatus by viewModel.backendStatus.collectAsState()
+    val generationSpeed by viewModel.generationSpeed.collectAsState()
+    val generatedTokens by viewModel.generatedTokens.collectAsState()
 
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -56,6 +58,14 @@ fun ChatScreen(
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (isGenerating) {
+                            Text(
+                                text = "生成速度 ${String.format(java.util.Locale.US, "%.1f", generationSpeed)} token/s · 已生成 $generatedTokens tokens",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -197,6 +207,20 @@ fun MessageBubble(message: ChatMessage) {
                 color = textColor,
                 lineHeight = 20.sp
             )
+            if (!isUser && !isSystem && message.generationDurationMs != null) {
+                val durationSeconds = message.generationDurationMs / 1000f
+                val durationLabel = if (durationSeconds >= 60f) {
+                    String.format(java.util.Locale.US, "%.1f 分钟", durationSeconds / 60f)
+                } else {
+                    String.format(java.util.Locale.US, "%.2f 秒", durationSeconds)
+                }
+                Text(
+                    text = "耗时 $durationLabel  ·  ${message.generatedTokens ?: 0} tokens  ·  平均 ${String.format(java.util.Locale.US, "%.1f", message.averageTokensPerSecond ?: 0f)} token/s",
+                    fontSize = 10.sp,
+                    color = textColor.copy(alpha = 0.65f),
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
         }
     }
 }

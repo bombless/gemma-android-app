@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -25,6 +24,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+
+    private val _generationSpeed = MutableStateFlow(0f)
+    val generationSpeed: StateFlow<Float> = _generationSpeed.asStateFlow()
+
+    private val _generatedTokens = MutableStateFlow(0)
+    val generatedTokens: StateFlow<Int> = _generatedTokens.asStateFlow()
 
     private val _backendStatus = MutableStateFlow("正在加载引擎与模型...")
     val backendStatus: StateFlow<String> = _backendStatus.asStateFlow()
@@ -62,6 +67,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         _messages.value = _messages.value + userMsg + initialModelMsg
         _isGenerating.value = true
+        _generationSpeed.value = 0f
+        _generatedTokens.value = 0
 
         val currentEngine = engine
         if (currentEngine == null) {
@@ -71,21 +78,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val formatted = currentEngine.tokenizer.formatChatPrompt(promptText)
             val responseBuilder = StringBuilder()
-
-            currentEngine.generateStream(formatted)
-                .catch { e ->
-                    responseBuilder.append("\n[生成异常]: ${e.message}")
-                    updateLastMessage(responseBuilder.toString())
-                    _isGenerating.value = false
-                }
-                .collect { token ->
-                    responseBuilder.append(token)
+            val generationStartNanos = System.nanoTime()
+            try {
+                val formatted = currentEngine.tokenizer.formatChatPrompt(promptText)
+                currentEngine.generateStream(formatted).collect { chunk ->
+                    responseBuilder.append(chunk.text)
+                    _generationSpeed.value = chunk.tokensPerSecond
+                    _generatedTokens.value = chunk.generatedTokens
                     updateLastMessage(responseBuilder.toString())
                 }
-
-            _isGenerating.value = false
+            } catch (e: Exception) {
+                responseBuilder.append("\n[生成异常]: ${e.message}")
+            } finally {
+                // Per-reply wall time includes prompt prefill and token decoding.
+                val durationMs = ((System.nanoTime() - generationStartNanos) / 1_000_000L).coerceAtLeast(1L)
+                val tokenCount = _generatedTokens.value
+                val averageSpeed = tokenCount * 1000f / durationMs
+                finishLastMessage(responseBuilder.toString(), durationMs, tokenCount, averageSpeed)
+                _isGenerating.value = false
+            }
         }
     }
 
@@ -97,6 +109,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 currentList[currentList.size - 1] = last.copy(text = newText)
                 _messages.value = currentList
             }
+        }
+    }
+
+    private fun finishLastMessage(
+        finalText: String,
+        durationMs: Long,
+        tokenCount: Int,
+        averageSpeed: Float
+    ) {
+        val currentList = _messages.value.toMutableList()
+        val lastIndex = currentList.lastIndex
+        if (lastIndex >= 0 && currentList[lastIndex].sender == ChatMessage.Sender.MODEL) {
+            currentList[lastIndex] = currentList[lastIndex].copy(
+                text = finalText.ifEmpty { "（本次没有生成文本）" },
+                generationDurationMs = durationMs,
+                generatedTokens = tokenCount,
+                averageTokensPerSecond = averageSpeed
+            )
+            _messages.value = currentList
         }
     }
 
