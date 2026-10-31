@@ -58,14 +58,6 @@ fun ChatScreen(
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (isGenerating) {
-                            Text(
-                                text = "生成速度 ${String.format(java.util.Locale.US, "%.1f", generationSpeed)} token/s · 已生成 $generatedTokens tokens",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
                     }
                 },
                 actions = {
@@ -145,14 +137,25 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(messages, key = { it.id }) { msg ->
-                MessageBubble(msg)
+                val isActiveReply = isGenerating && msg.id == messages.lastOrNull()?.id
+                MessageBubble(
+                    message = msg,
+                    isGenerating = isActiveReply,
+                    generationSpeed = generationSpeed,
+                    generatedTokens = generatedTokens
+                )
             }
         }
     }
 }
 
 @Composable
-fun MessageBubble(message: ChatMessage) {
+fun MessageBubble(
+    message: ChatMessage,
+    isGenerating: Boolean = false,
+    generationSpeed: Float = 0f,
+    generatedTokens: Int = 0
+) {
     val isUser = message.sender == ChatMessage.Sender.USER
     val isSystem = message.sender == ChatMessage.Sender.SYSTEM
 
@@ -193,13 +196,30 @@ fun MessageBubble(message: ChatMessage) {
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             if (!isUser) {
-                Text(
-                    text = if (isSystem) "系统提示" else "Gemma 4",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = textColor.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 2.dp)
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = if (isSystem) "系统提示" else "Gemma 4",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColor.copy(alpha = 0.7f),
+                        maxLines = 1
+                    )
+                    if (!isSystem && isGenerating) {
+                        Text(
+                            text = "${String.format(java.util.Locale.US, "%.1f", generationSpeed)} token/s · $generatedTokens tokens",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
             Text(
                 text = message.text.ifEmpty { "思考中..." },
