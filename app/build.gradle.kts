@@ -8,13 +8,8 @@ android {
     namespace = "com.example.gemmaapp"
     compileSdk = 35
 
-    packaging {
-        jniLibs.useLegacyPackaging = true
-    }
-
-    androidResources {
-        noCompress += listOf("")
-    }
+    packaging { jniLibs.useLegacyPackaging = true }
+    androidResources { noCompress += listOf("") }
 
     defaultConfig {
         applicationId = "com.example.gemmaapp"
@@ -22,19 +17,13 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -42,21 +31,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-    buildFeatures {
-        compose = true
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
 }
 
 dependencies {
-    // Sandboxed, pure-JVM JavaScript runtime for model-generated code and tests.
+    implementation(project(":shared-tools"))
     implementation("org.mozilla:rhino:1.7.15")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
     implementation("com.qualcomm.qti:onnxruntime-android-qnn:2.6.0")
     implementation("com.qualcomm.qti:qnn-runtime:2.50.0")
-
     implementation(platform("androidx.compose:compose-bom:2025.02.00"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.ui:ui")
@@ -66,8 +50,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
-
     testImplementation("junit:junit:4.13.2")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
