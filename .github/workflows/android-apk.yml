@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - feature/qat-mobile-clean
   pull_request:
     branches:
       - master
