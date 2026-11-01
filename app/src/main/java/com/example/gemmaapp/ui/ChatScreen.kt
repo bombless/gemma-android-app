@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Refresh
@@ -50,6 +52,8 @@ fun ChatScreen(
     viewModel: ChatViewModel
 ) {
     val messages by viewModel.messages.collectAsState()
+    val sessions by viewModel.sessions.collectAsState()
+    var showHistory by remember { mutableStateOf(false) }
     val isGenerating by viewModel.isGenerating.collectAsState()
     val backendStatus by viewModel.backendStatus.collectAsState()
     val generationSpeed by viewModel.generationSpeed.collectAsState()
@@ -152,6 +156,52 @@ fun ChatScreen(
         }
     }
 
+    if (showHistory) {
+        AlertDialog(
+            onDismissRequest = { showHistory = false },
+            title = { Text("聊天历史") },
+            text = {
+                if (sessions.isEmpty()) {
+                    Text("还没有保存的聊天。发送第一条消息后会自动出现在这里。")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                        items(sessions, key = { it.id }) { session ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        viewModel.openSession(session.id)
+                                        showHistory = false
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    enabled = !isGenerating
+                                ) {
+                                    Column(Modifier.fillMaxWidth()) {
+                                        Text(session.title, maxLines = 1, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                                                .format(java.util.Date(session.updatedAt)),
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                IconButton(onClick = { viewModel.deleteSession(session.id) }, enabled = !isGenerating) {
+                                    Icon(Icons.Default.Delete, contentDescription = "删除会话", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showHistory = false }) { Text("关闭") }
+            }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.imePadding(),
         topBar = {
@@ -171,8 +221,14 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.clearHistory() }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Clear History")
+                    IconButton(onClick = { showHistory = true }) {
+                        Icon(Icons.Default.History, contentDescription = "聊天历史")
+                    }
+                    IconButton(onClick = { viewModel.newChat() }, enabled = !isGenerating) {
+                        Icon(Icons.Default.Add, contentDescription = "新建聊天")
+                    }
+                    IconButton(onClick = { viewModel.clearHistory() }, enabled = !isGenerating) {
+                        Icon(Icons.Default.Delete, contentDescription = "新建空白对话")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
