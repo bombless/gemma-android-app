@@ -29,6 +29,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     )
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    private val historyStore = ChatHistoryStore(application)
+    private val _sessions = MutableStateFlow(historyStore.load())
+    val sessions: StateFlow<List<ChatSession>> = _sessions.asStateFlow()
+    private val _activeSessionId = MutableStateFlow(_sessions.value.firstOrNull()?.id ?: java.util.UUID.randomUUID().toString())
+    val activeSessionId: StateFlow<String> = _activeSessionId.asStateFlow()
+    private fun persistCurrentSession() {
+        val current = _messages.value
+        if (current.none { it.sender == ChatMessage.Sender.USER }) return
+        val title = current.first { it.sender == ChatMessage.Sender.USER }.text.take(42).ifBlank { "新对话" }
+        val session = ChatSession(_activeSessionId.value, title, System.currentTimeMillis(), current)
+        _sessions.value = (_sessions.value.filterNot { it.id == session.id } + session).sortedByDescending { it.updatedAt }
+        historyStore.save(_sessions.value)
+    }
+    fun newChat() {
+        if (_isGenerating.value) return
+        persistCurrentSession()
+        _activeSessionId.value = java.util.UUID.randomUUID().toString()
+        _messages.value = listOf(ChatMessage(sender = ChatMessage.Sender.SYSTEM, text = "欢迎使用 Gemma 4！请输入问题开始对话。"))
+    }
+    fun openSession(id: String) {
+        if (_isGenerating.value) return
+        persistCurrentSession()
+        val session = _sessions.value.firstOrNull { it.id == id } ?: return
+        _activeSessionId.value = session.id
+        _messages.value = session.messages
+    }
+    fun deleteSession(id: String) {
+        _sessions.value = _sessions.value.filterNot { it.id == id }
+        historyStore.save(_sessions.value)
+        if (_activeSessionId.value == id) {
+            _activeSessionId.value = java.util.UUID.randomUUID().toString()
+            _messages.value = listOf(ChatMessage(sender = ChatMessage.Sender.SYSTEM, text = "已删除会话。"))
+        }
+    }
+
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
@@ -76,6 +111,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     """.trimIndent()
 
     init {
+        _sessions.value.firstOrNull()?.let { session ->
+            _activeSessionId.value = session.id
+            _messages.value = session.messages
+        }
         loadEngine()
     }
 
@@ -135,6 +174,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        val previousContext = _messages.value.filter { it.sender != ChatMessage.Sender.SYSTEM && it.text.isNotBlank() }
+            .joinToString("\n") { (if (it.sender == ChatMessage.Sender.USER) "用户：" else "Gemma：") + it.text }
         val modelPrompt = if (audioSamples != null) {
             "Transcribe the following speech segment in Chinese into Chinese text.\n\n" +
                 "Follow these specific instructions for formatting the answer:\n" +
@@ -142,6 +183,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 "* When transcribing numbers, write the digits.\n\n" +
                 "<|audio>" + "<|audio|>".repeat(audioTokenCount) + "<audio|>"
         } else promptText.trim()
+        val contextualModelPrompt = if (previousContext.isBlank()) modelPrompt else "此前对话：\n$previousContext\n用户：$modelPrompt"
         val displayText = if (audioSamples != null) {
             "🎤 语音输入（${String.format(java.util.Locale.US, "%.1f", audioSamples.size / 16000f)} 秒）"
         } else promptText.trim()
@@ -150,6 +192,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val initialModelMsg = ChatMessage(sender = ChatMessage.Sender.MODEL, text = "")
 
         _messages.value = _messages.value + userMsg + initialModelMsg
+        persistCurrentSession()
         _isGenerating.value = true
         _generationSpeed.value = 0f
         _generatedTokens.value = 0
@@ -167,7 +210,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val toolCallItems = mutableListOf<ToolCallInfo>()
             val generationStartNanos = System.nanoTime()
             var totalTokens = 0
-            var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(modelPrompt, toolSystemPrompt)
+            var conversationPrompt = currentEngine.tokenizer.formatChatPrompt(contextualModelPrompt, toolSystemPrompt)
             try {
                 var toolRounds = 0
                 while (true) {
@@ -279,6 +322,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 Log.i(TAG, "THINK_TRACE generation_finish tokens=$totalTokens thinkingChars=${thinkingBuilder.length} answerChars=${responseBuilder.length} error=${responseBuilder.contains("[生成异常]")}")
                 finishLastMessage(responseBuilder.toString(), durationMs, totalTokens, averageSpeed, thinkingBuilder.toString(), toolCallItems.toList())
                 _isGenerating.value = false
+                persistCurrentSession()
             }
         }
     }
@@ -319,14 +363,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun clearHistory() {
-        _messages.value = listOf(
-            ChatMessage(
-                sender = ChatMessage.Sender.SYSTEM,
-                text = "对话历史已清空。"
-            )
-        )
-    }
+    fun clearHistory() = newChat()
 
     override fun onCleared() {
         super.onCleared()
