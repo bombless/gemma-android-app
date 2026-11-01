@@ -68,6 +68,13 @@ class GemmaEngine private constructor(
 ) {
     companion object {
         private const val TAG = "GemmaEngine"
+        /** Unique log tag for QNN optrace enable/disable messages (avoid mixing with other perf logs). */
+        private const val OPTRACE_TAG = "GemmaQnnOptrace"
+        /**
+         * When true, enables QNN HTP optrace profiling and dumps events to a CSV under
+         * the app external files dir. Turn off for production / normal runs.
+         */
+        private const val ENABLE_QNN_OPTRACE = true
         private const val NUM_KV_LAYERS = 15 // Gemma 4 E2B merged decoder KV layers (0..14)
         private const val MAX_SEQ_LEN = 2048
 
@@ -136,22 +143,34 @@ class GemmaEngine private constructor(
                     val backendLib = File(context.applicationInfo.nativeLibraryDir, "libQnnHtp.so")
 
                     if (device != null && backendLib.isFile) {
+                        val providerOptions = mutableMapOf(
+                            "backend_path" to backendLib.absolutePath,
+                            "soc_model" to "57",
+                            "htp_arch" to "75",
+                            "enable_htp_fp16_precision" to "1",
+                            "enable_block_quant_weight_optimization" to "1",
+                            "htp_performance_mode" to "burst",
+                            "qnn_context_priority" to "high",
+                            "vtcm_mb" to "8",
+                            "htp_graph_finalization_optimization_mode" to "3"
+                        )
+                        if (ENABLE_QNN_OPTRACE) {
+                            // Unique tag so these messages are easy to filter from other perf logs.
+                            val optraceDir = context.getExternalFilesDir(null)
+                                ?: context.filesDir
+                            val optraceFile = File(optraceDir, "qnn_optrace_${System.currentTimeMillis()}.csv")
+                            providerOptions["profiling_level"] = "optrace"
+                            providerOptions["profiling_file_path"] = optraceFile.absolutePath
+                            Log.i(OPTRACE_TAG, "QNN optrace ENABLED -> ${optraceFile.absolutePath}")
+                        } else {
+                            Log.i(OPTRACE_TAG, "QNN optrace disabled (ENABLE_QNN_OPTRACE=false)")
+                        }
                         val qnnOpts = OrtSession.SessionOptions().apply {
                             setSessionLogLevel(OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING)
                             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                             addExecutionProvider(
                                 listOf(device),
-                                mapOf(
-                                    "backend_path" to backendLib.absolutePath,
-                                    "soc_model" to "57",
-                                    "htp_arch" to "75",
-                                    "enable_htp_fp16_precision" to "1",
-                                    "enable_block_quant_weight_optimization" to "1",
-                                    "htp_performance_mode" to "burst",
-                                    "qnn_context_priority" to "high",
-                                    "vtcm_mb" to "8",
-                                    "htp_graph_finalization_optimization_mode" to "3"
-                                )
+                                providerOptions
                             )
                         }
                         decoderSession = env.createSession(modelPaths.decoderModelFile.absolutePath, qnnOpts)
